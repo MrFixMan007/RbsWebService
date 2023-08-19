@@ -1,1 +1,2 @@
 # RbsWebService
+Здесь веб-сервис
