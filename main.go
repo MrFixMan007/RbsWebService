@@ -1,15 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
+
+type responseFiles struct {
+	Time  string
+	Files []File
+}
 
 type File struct {
 	Type string
@@ -34,11 +42,17 @@ func HomeHandler(w http.ResponseWriter, r *http.Request) {
 
 //DirHandler получает адрес и тип сортировки, сортирует и отправляет массив объектов в формате json
 func DirHandler(w http.ResponseWriter, r *http.Request) {
+	//Узнаём время
+	start := time.Now()
+
+	//Ставим заголовок тип контента на json
 	w.Header().Set("Content-Type", "application/json")
 
+	//получаем входные параметры из запроса
 	root, sortType := r.URL.Query().Get("root"), r.URL.Query().Get("sortType")
 	fmt.Printf("Получен %s\n", root)
 
+	//Подсчитываем файлы/папки по адресу
 	files, err := listDirByReadDir(root)
 	if err != nil {
 		fmt.Println(err)
@@ -46,16 +60,68 @@ func DirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	//Сортировка по размеру
 	files = SortFiles(files, sortType)
-	json_data, err := json.Marshal(files)
+
+	//Вычисляем сколько времени заняло
+	elapsedTime := float64(time.Since(start) / time.Millisecond)
+	elapsedTimeStr := fmt.Sprintf("%0.1f секунд(ы)", float64(elapsedTime/1000))
+
+	//Маршалим ответ в вид json
+	response := responseFiles{Time: elapsedTimeStr, Files: files}
+	json_data, err := json.Marshal(response)
 	if err != nil {
 		fmt.Println(err)
 	}
 
+	//Отправляем ответ
 	_, err = w.Write(json_data)
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	//получаем ip
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	go addStatistic(root, elapsedTime, ip)
+}
+
+//addStatistic отправляет Put-запрос на сервер Apache, который записывает статистику в БД
+func addStatistic(root string, elapsedTime float64, ip string) error {
+
+	//адрес на php-скрипт сервера Apache
+	url := fmt.Sprintf("http://%s:80/stat.php", ip)
+
+	//создаём переменную, которую передадим
+	values := map[string]string{"root": root, "elapsed_time": fmt.Sprintf("%0.0f", elapsedTime)}
+
+	//маршалим в формат json
+	json_data, err := json.Marshal(values)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	//создаём Put-запрос, в который передаём адрес и json-данные
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(json_data))
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	//устанавливает заголовок
+	req.Header.Set("Content-Type", "application/json")
+
+	//создаём клиент
+	client := &http.Client{}
+
+	//отправляем запрос
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println(resp, err)
+	}
+	defer resp.Body.Close()
+
+	//печатаем ответ
+	fmt.Println(resp)
+	return nil
 }
 
 //getIpPort читает и возвращает ip и port из файла config.json
